@@ -1,0 +1,357 @@
+---
+title: "Predicting Weight Lifting Techniques Using Machine Learning"
+author: "sdbj2063"
+date: "July 17, 2015"
+output: html_document
+---
+
+## Summary  
+
+The weight-lifting data set consisted of almost 20K rows of continuous data recordings of six young men performing one weight-lifting activity using five different methods, one correct and four incorrect. The datasets had 160 variables, some raw data collected from sensors and many calculated. The best performing algorithm for predicting the `classe` of the 20-row prediction test data set was random forest using CV for resampling. Accuracy was very high, but the elapsed time was very long compared to other projects completed for projects in this series. Had deadlines and computing power not been a barrier, many models could have been attempted and evaluated.    
+
+## Original Research into Qualitative Activity Recognition  
+
+Five researchers across the globe asked a critical machine learning question: What technology resources and data analytic methods can we use effectively to identify the quality of physical motions? [The Human Activity Recognition Weight Lifting Exercises Dataset project](http://groupware.les.inf.puc-rio.br/har) used four motion sensors on the belt, forearm, arm and dumbell of six male participants and recorded their performance of barbell lifts in five prescribed ways, one correctly and four incorrectly.  
+
+In their research paper, [Qualitative Activity Recognition of Weight Lifting Exercises](http://groupware.les.inf.puc-rio.br/public/papers/2013.Velloso.QAR-WLE.pdf), they spelled out the five classes of Unilateral Dumbbell Biceps Curl exercises that the subjects performed:  
+ 
+A.  Exactly according to the specification (correct method)   
+B.  Throwing the elbows to the front  
+C.  Lifting the dumbbell only halfway  
+D.  Lowering the dumbbell only halfway  
+E.  Throwing the hips to the front  
+
+The researchers "...calculated features on the Euler angles (roll, pitch and yaw), as well as the raw accelerometer, gyroscope and magnetometer readings." Using the three angles on each of the four sensors, they calculated eight features, resulting in a total of 96 feature sets. The primary features were "...mean, variance, standard deviation, max, min, amplitutde, kurtosis and skewness."  The sensors recorded readings in seconds of time.  
+
+Using a best fit model, the researchers selected 17 features for their model and used the Random Forest algorithm with the "Bagging" method and 10-fold cross-validation.  
+
+## Practical Machine Learning Project Description  
+
+The goal of this project was two-fold:  
+1.  Build a model to predict in what class a subject performed an exercise.  
+2.  Predict the class for each of the 20 test records.  
+
+The data comes from the project described above  
+Training set [https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv) and   
+Testing set [https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv)  
+
+## Load Libraries and Training Data   
+```{r, echo=FALSE, message=FALSE}
+## Load libraries
+library(lattice)
+library(ggplot2)
+library(caret)
+library(randomForest)
+library(RGtk2)
+library(rattle)
+library(rpart)
+library(plyr)
+```
+The process loaded the libraries using the most current versions of the packages, including `caret` and `randomForest`, and imported the training data set into R 3.2.1.    
+
+```{r}
+## Load training data
+pmltraining <- read.csv("pml-training.csv", na.strings = c("NA", "", "#DIV/0!"))
+myrows <- nrow(pmltraining)
+myvars <- ncol(pmltraining)
+```
+Loading the training data using `read.csv()` from the working directory resulted in a large dataset with `r myrows` rows and `r myvars` variables. When importing the data, the process Changed values of "NA," empty strings and "#DIV/0!" to NA values.  
+
+## Partitioning and Cleaning the Data  
+
+The best process for developing the model was to partition the data into a training group and a testing group. Step 1 was to divide the data into two groups. Due to concerns about length of processing time on available machines (a minimum of 1.3 hours without the report processing), the script split the data set into two equal sets.     
+
+```{r}
+## Clean the Data
+### Set seed
+### Create partitions for training and testing
+set.seed(665)
+inTrain <- createDataPartition(y = pmltraining$classe, p = 0.50, list = FALSE)
+training <- pmltraining[inTrain, ]
+testing <- pmltraining[-inTrain, ]
+dim(training); dim(testing)
+```
+
+Two obvious issues to consider for data quality were variables with predominatly NA values and variables that were not essential to the analysis. In the first instance, variables populated only when the field `NEW_WINDOW = YES` were good candidates for deletion. In the second instance, candidate variables included user information and time.  
+
+Searching `new_window` for `YES` values was an easy mechanism to test the population of the first. A visual inspection of the data resolved the second issue.  
+
+```{r, echo=FALSE}
+### Identify rows where new_window=="yes" and "no."
+### Columns with "yes" in new_window have useable data infrequently 
+### and are predominantly NA values.
+nrow.newwindow.yes <- nrow(training[training$new_window=="yes", ])
+nrow.newwindow.no <- nrow(training[training$new_window=="no", ])
+nrow.newwindow.percent <- round((nrow.newwindow.yes/myrows)*100)
+df.names <- names(training[,colSums(is.na(training)) > nrow.newwindow.yes])
+df.names.length <- length(df.names)
+```
+
+When the processing finished, out of `r myrows` rows, `r nrow.newwindow.yes` rows had the field `new_window` equals "yES," or `r nrow.newwindow.percent` percent of the rows. Out of a total of `r myvars` columns, the data sensors populated `r df.names.length` columns only when `new_window` equaled "YES." Removing these columns was critical to reducing the processing time.  
+
+```{r}
+## Remove columns
+## recalculate number of columns
+training.nocols <- training
+training.nocols[df.names] <- list(NULL)
+ncol.training <- ncol(training.nocols)
+```
+
+After removing `df.names.length` variables, the training data set contained `ncol.training` variables. The final step was to remove columns extraneous to the numerical data processing.   
+
+```{r}
+##  Create column list
+##  Remove columns from training set
+cols.char <- c("X", "user_name", "raw_timestamp_part_1", "raw_timestamp_part_2", "cvtd_timestamp", "new_window", "num_window")
+training.nocols[cols.char] <- list(NULL)
+```
+
+```{r, echo=FALSE}
+df.columns.length <- length(cols.char)
+df.columns.length.final <- ncol(training.nocols)
+```
+
+After removing `r df.columns.length` columns that were character data types, the final data set `training.nocols` contained `r df.columns.length.final` variables, a manageable number.  
+
+## Exploring the Data  
+
+Exploring the data included identifying any other variables that were of no consequence and identifying possible variable candidates for the model formula. To accomplish these two goals required calculating Near Zero (NZ) covariants and perfoming a manual Principal Components Analysis (PCA).  
+
+```{r}
+## Perform NZ analysis
+## Display the number of TRUE and FALSE for the zeroVar and nzv variables.
+training.nzv <- nearZeroVar(training.nocols, saveMetrics = TRUE)
+count(training.nzv$zeroVar); count(training.nzv$nzv)
+```
+
+Data cleaning removed any variables that might have been TRUE for `zeroVar` or `nzv`. That meant the remaining variables were reasonable formula candidates. PCA identified important variables for consideration when building the formula.  
+
+```{r}
+absolute.M <- abs(cor(training.nocols[ , -53]))
+diag(absolute.M) <- 0
+absolute.M.80 <- which(absolute.M > 0.8, arr.ind = T)
+absolute.M.80.un <- unique(absolute.M.80[,2])
+absolute.M.80.un.len <- length(unique(absolute.M.80[,2]))
+```
+
+At the 80 percent threshold the system identified `r absolute.M.80.un.len` unique variables. A higher threshold would have narrowed the list further. The most likely candidates included the following:  
+
+```{r, echo=FALSE}
+names(training.nocols[,c(absolute.M.80.un)])
+```
+
+THeoretically, with time permitting, this list plus the pair ranking from the correlation table would have provided a good first list for a manual formula development. Time limitations forced using the `train` command with predefinded methods to develop the model.  
+
+## Exploring the Random Forest Model   
+
+Due to memory processing power constraints and time limitations, the program only examined the Random Forest method as the possible machine learning algorithm to accurately predict weight lifting activity. This seemed like the most likely candidate considering the fact that the researchers on the published paper used that algorithm.  
+
+### Define the Model with Cross Validation  
+
+The first step was to define the train control parameters and use the `train` function to execute the random forest method against the training data set. The reampling method was cross validation with 10 resampling iterations and one repeat. This process took the most time and required multiple attempts on two different machines and virtual memory adjustments before the code successfully executed without error and within a reasonable timeframe.  
+
+```{r}
+## Define the train control parameters
+## Run train() to define the model
+tc.params <- trainControl(method = "cv", number = 10, repeats = 1)
+modFit.rf <- train(classe ~ ., data = training.nocols, method = "rf", trControl = tc.params)
+modFit.rf.mtry <- modFit.rf$bestTune
+modFit.rf.mtry.num <- as.numeric(modFit.rf$bestTune)
+modFit.rf.metric <- modFit.rf$metric
+modFit.rf
+```
+
+The evaluation metric was `r modFit.rf.metric`, and the best model for tuning was `r modFit.rf.mtry`. The 10 resampling results, listed below, showed a high and low range of `r  max(modFit.rf$resample[,1])` and `r min(modFit.rf$resample[,1])` for `Accuracy`.    
+
+```{r, echo=FALSE}
+modFit.rf$resample
+```
+
+The `finalModel` attribute of the model showed a favorable `Confusion Matrix` and `OOB` estimate of the error rate.  
+
+```{r}
+modFit.rf$finalModel
+```
+
+The data set contained 52 variables, which the random forest model dutifully evaluated. The top 20 ranked by `Importance` demonstrated an interesting pattern favoring 15-17 variables.  
+
+```{r, echo=FALSE}
+plot(varImp(modFit.rf), main = "Plot of Top 20 Variables in Random Forest Model by Importance", top = 20)
+```
+
+Comparing the predictors to accuracy within the model indicated a clear preference and cutoff for benefits to the model.  
+
+```{r, echo=FALSE}
+plot(modFit.rf, log = "y", lwd = 2, main = "Plot of Random Forest Model", xlab = "Predictors", ylab = "Accuracy")
+```
+
+### Evaluating the Model  
+
+#### Runing Time  
+
+```{r, echo=FALSE}
+modFit.rf.elapsedtime <- modFit.rf$times$everything[3]	## elapsed time for entire call
+modFit.rf.runtime <- (modFit.rf.elapsedtime/60)/60		## hours the model took to run
+modFit.rf.tree <- getTree(modFit.rf$finalModel, k = modFit.rf.mtry.num)
+```
+
+The time to run the model on the data set on the available equipment was a disadvantage as the time logs recorded. The elapsed time for the entire `train()` call was `r modFit.rf.runtime` hours. That's not surprising since the preferred model tree had `r dim(modFit.rf.tree)[1]` splits.    
+
+#### Confusion Matrix  
+
+The confusion matrix comparing the predictions on the training data to the actual `classe` value was very favorable, which was to be expected since the system developed the model on that data set. The first table, which compared the "Reference" values of correct predictions for `classe` to the "Prediction" values demonstrated the model performed well.  
+
+```{r}
+training.predictions <- predict(modFit.rf, newdata=training.nocols)
+training.confMatrix <- confusionMatrix(training.predictions, training.nocols$classe)
+training.confMatrix
+```
+
+### Predictions Plot  
+
+The jitter box plot demonstrated a clear and significant pattern for each `classe`.  
+
+```{r}
+qplot(training.predictions, classe, colour = roll_belt, geom=c("boxplot", "jitter"), data = training.nocols, main = "Plot of Subset Training Predictions to Training Classe", xlab = "Training Predictions", ylab = "Training Classe")
+```
+
+#### In Sample Error  
+
+The in-sample error rate was 1 minus the accuracy of the model. The error rate for the model on the training data set was very low. Usually the in-sample error rate was optimistic, so the out-of-sample error rate should be a bit higher. With cross validation already in the model, the may not be the case.  
+
+```{r}
+modFit.rf.results <- modFit.rf$results
+modFit.rf.results.accuracy <- modFit.rf$results$Accuracy
+training.ise <- (as.numeric(1 - max(modFit.rf.results.accuracy)))*100
+training.ise
+```
+
+All in all, the model results promised effective results for applying the model to the testing data set and the 20-row prediction data set.  
+
+## Fitting the Model to the Subsetted Test Data   
+
+The next step in the process was to apply the random forest model to the testing data subsetted from the pml-training.csv file. The process involved applying the same data transformation steps to the data and using the model to predict the results.  
+
+```{r}
+set.seed(665)
+testing.nocols <- testing
+testing.nocols[df.names] <- list(NULL)		## Remove new_window = yes columns
+testing.nocols[cols.char] <- list(NULL)		## Remove character columns
+## Apply the training model to the testing subset
+testing.predictions <- predict(modFit.rf, testing.nocols)	
+dim(testing.nocols) 
+```
+
+### Evaluating the Model's Performance  
+
+As with the training data, the evaluation methods included a confusion matrix, a table of the testing predictions and a plot of the predictions.  
+
+#### Confusion Matrix  
+
+The confusion matrix demonstrated that the model correctly identified the vast majority of the `classe` values. The confusion matrix included a table of predictions and `classe` values, Prediction by Reference. The Accuracy and Statistics by Class table demonstrated values very close to the model results on the training data.   
+
+```{r}
+testing.confMatrix <- confusionMatrix(testing.predictions,testing.nocols$classe)
+testing.confMatrix  
+```
+
+#### Predictions Plot  
+
+The jitter box plot demonstrated a clear and significant pattern for each `classe` that matched the training data plot with a few outliers.  
+
+```{r, echo=FALSE}
+
+qplot(testing.predictions, classe, colour = roll_belt, geom=c("boxplot", "jitter"), data = testing.nocols, main = "Plot of 
+Subset Testing Predictions to Testing Classe", xlab = "Testing Predictions", ylab = "Testing Classe")
+```
+
+### Out-of-Sample Error  
+
+The out-of-sample error rate refers to the error obtained when applying the model to data other than the data used to develop the model. As with the in-sample error rate, the out-of-sample error rate is 1 minus the `Accuracy` of the model's performance. The code below manually calculated accuracy and obtained the accuracy from the confusion matrix.  
+
+```{r}
+testing.nocols.accuracy.est <- sum(testing.predictions == testing.nocols$classe)/length(testing.predictions)
+testing.nocols.accuracy.est
+testing.confMatrix$overall[1]
+testing.ose <- (as.numeric(1 - testing.confMatrix$overall[1]))*100
+testing.ose
+```
+
+The OSE rate was very favorable. The ISE was lower than the OSE, suggesting that the model was overfitted. However, the difference was not dramatic and the plot matched the in-sample plot with a dappling of outliers.   
+
+The final step in the process required applying the model to the segregated 20-row data set to obtain the predictions.   
+
+## Applying the Model to the 20-row Prediciton Data  
+
+### Import the Test Data and Remove Columns  
+
+As with the previous attempts, the process imported the data, removed data columns and applied the model to the remaining data.  
+
+```{r}
+pmltesting <- read.csv("pml-testing.csv", na.strings = c("NA", "", "#DIV/0!"))
+set.seed(665)
+pmltesting.nocols <- pmltesting
+pmltesting.nocols[df.names] <- list(NULL)
+pmltesting.nocols[cols.char] <- list(NULL)
+dim(pmltesting.nocols)
+```
+
+Unlike the model development process, applying the model to this data set was quick. The data set did not have any reference values with which to compare the prediction results, so the grade for the class submission was the TRUE or FALSE test evaluation.   
+
+```{r}
+pmltesting.predictions <- predict(modFit.rf, pmltesting.nocols)
+pmltesting.predictions
+```
+
+## Conclusions  
+
+### 1. In Sample and Out of Sample Error Rates
+
+In theory, the in-sample error rate should have been more optimistic, or smaller, than the out-sample error rate.  
+
+```{r}
+training.ise; testing.ose
+```
+
+One explanation for the reverse in this logic may be that the algorithm applied the cv method and performed 10 interations of resampling.   
+
+### 2. Random Forest Model
+
+As the model description and the `finalModel` text illustrated, the model provided exceptional accuracy. The size of the model was a little more than 20 Mb.  
+
+```{r}
+modFit.rf
+modFit.rf$finalModel
+```
+
+Using the GBM model or testing the performance of other models was not an option due to time and machine costraints already mentioned.  
+
+### 3. Time to Run Model
+
+The only disadvantage of this model when applied to the data set was the runtime of `r modFit.rf.runtime` hours. Had computing power not been an issue, the training and testing set split could have been 60/40 or 70/30.   
+
+In previous off-line attempts to manually construct an algorithm formula one variable at a time (`classe ~ roll_belt + pitch_belt + yaw_belt + total_accel_belt + accel_belt_z`), the result was an eight-minute runtime, not counting the short time to constuct the formula one variable at a time. The best `Accuracy` of the five-variable model was 0.8805544. Had delivery time for the project not been an issue, using PCA to manually construct a model might have been an interesting exercise.   
+
+## Appendix to Write Out Prediction Files for Submission  
+
+As recommended in the project description, the code below generated the 20 submission files for the project.  
+
+```{r}
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_", i, ".txt")
+    write.table(x[i], file=filename, quote=FALSE, row.names=FALSE, col.names=FALSE)
+  }
+}
+
+pml_write_files(as.character(pmltesting.predictions))
+```
+
+## References  
+
+Original data and the project write-up was published in 2013.  
+
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013. [http://groupware.les.inf.puc-rio.br/public/papers/2013.Velloso.QAR-WLE.pdf](http://groupware.les.inf.puc-rio.br/public/papers/2013.Velloso.QAR-WLE.pdf)   
+
+
